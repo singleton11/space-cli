@@ -1,0 +1,34 @@
+{
+  "name": "space-cli",
+  "version": "0.1.0",
+  "description": "Narrow-scope CLI for coding agents to read, answer, and resolve JetBrains Space code review comments",
+  "type": "module",
+  "bin": {
+    "space-cli": "dist/bin/space-cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "jetbrains",
+    "space",
+    "code-review",
+    "cli"
+  ],
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
+  }
+}

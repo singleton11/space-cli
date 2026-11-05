@@ -8,3 +8,7 @@ google-cloud-sdk/
 # Node (M1+)
 node_modules/
 dist/
+
+# build artifacts
+node_modules/
+dist/

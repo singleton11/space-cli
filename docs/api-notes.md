@@ -27,6 +27,13 @@ Base: `https://jetbrains.team/api/http`
 | Review details | `GET /projects/{project}/code-reviews/{reviewId}/details` → `{shortInfo, commits, discussionCounter, branches}` |
 | Files in review | `GET /projects/{project}/code-reviews/{reviewId}/files` |
 
+**`GET .../code-reviews/{reviewId}` quirks (pinned live in M1, 2026-11-05):**
+- **Default response is minimal** (id, number, title, state, createdAt, feedChannelId, branchPair only). The full shape requires the projection
+  `?$fields=id,number,title,state,createdAt,feedChannelId,branchPair,participants,reviewers,discussionCounter,commits`
+  (verified live — returns the complete record incl. `participants[].user.id` + role, discussionCounter, commits).
+- **A missing review returns HTTP 200 with body `null`** — not a 404 envelope. The CLI maps that to `not-found`.
+- `key:IJ` / `key:AMPER` work as project identifiers; bare `IJ` does not ("Active project with ID IJ not found").
+
 `{project}` = `key:IJ` or the project id. `{reviewId}` = record id (e.g. `2AomjG0QgoiG`); reviews also have a human `number` (e.g. 233811) usable via `ReviewIdentifier.Number`.
 
 **List filters (query params):** `state` · `text` · `author` · `reviewer` · `from` · `to` · `repository` · `sourceBranch` · `targetBranch` · `sort` · `type` · `$skip` · `$top` · `$fields`

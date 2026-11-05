@@ -128,7 +128,7 @@ This plan deliberately does **not** claim exact Space endpoint paths. Step 0 pin
 | Milestone | Contents | Est. |
 |---|---|---|
 | **M0 — Spike** | §7. Hard gate. | 0.5 d |
-| **M1 — Skeleton** | Config/env, HTTP client, auth, JSON output + error envelope, `reviews show` | 0.5–1 d |
+| **M1 — Skeleton** | Config/env, HTTP client, auth, JSON output + error envelope, `reviews show` — ✅ **DONE 2026-11-05** (TypeScript/Node, commander, vitest: 33 tests incl. golden fixture tests; live E2E on jetbrains.team verified: MR + commit-set reviews, not-found path) | 0.5–1 d |
 | **M2 — Read path** | `reviews list` (filters, pagination), `comments list` (threads, anchors, filters) | 1–2 d |
 | **M3 — Diff context** | `--diff-context`: revision content fetch, hunk builder, `outdated` flag | 1 d |
 | **M4 — Mutations** | `comments reply`, `resolve`, `unresolve` | 1 d |
