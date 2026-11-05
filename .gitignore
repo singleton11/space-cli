@@ -1,0 +1,10 @@
+# Secrets
+.space-token
+
+# Unrelated large downloads
+google-cloud-cli-linux-x86_64.tar.gz
+google-cloud-sdk/
+
+# Node (M1+)
+node_modules/
+dist/
