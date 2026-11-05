@@ -98,6 +98,8 @@ space-cli comments unresolve --comment <commentId>
 }
 ```
 
+**List envelopes:** `reviews list` emits `{"totalCount": <matching filters, independent of --limit>, "reviews": [...]}`; `comments list` emits `{"reviewId": "<id>", "comments": [...]}` (oldest first). Until M3 ships revision comparison, the `outdated` field is `null` — agents must not rely on it in v1.
+
 **Snippet:** Space already returns a code snippet per comment (`snippet.lines` with old/new line numbers) — `comments list` emits it by default, making `--diff-context` a pure enhancement.
 
 **Diff context (`--diff-context N`):** the CLI fetches the file content (or commit diff) **at the comment's revision** from Space and emits the hunk around the anchor lines — *exactly what the reviewer saw*. This lets an agent interpret the comment without any git operations, even if its local checkout has moved on.
@@ -129,7 +131,7 @@ This plan deliberately does **not** claim exact Space endpoint paths. Step 0 pin
 |---|---|---|
 | **M0 — Spike** | §7. Hard gate. | 0.5 d |
 | **M1 — Skeleton** | Config/env, HTTP client, auth, JSON output + error envelope, `reviews show` — ✅ **DONE 2026-11-05** (TypeScript/Node, commander, vitest: 33 tests incl. golden fixture tests; live E2E on jetbrains.team verified: MR + commit-set reviews, not-found path) | 0.5–1 d |
-| **M2 — Read path** | `reviews list` (filters, pagination), `comments list` (threads, anchors, filters) | 1–2 d |
+| **M2 — Read path** | `reviews list` (filters, pagination), `comments list` (threads, anchors, filters) — ✅ **DONE 2026-11-05** (31 new tests, 64 total; live E2E on jetbrains.team: 81-thread review with feed pagination + 40 review-level threads, `--file`/`--author`/`--unresolved` filters, deleted-message ghost filtering; bare project keys now auto-prefixed `key:` — bare keys 404 live, fixing the M1 trap; `--project` escape hatches: `key:XX` / `id:XX`) | 1–2 d |
 | **M3 — Diff context** | `--diff-context`: revision content fetch, hunk builder, `outdated` flag | 1 d |
 | **M4 — Mutations** | `comments reply`, `resolve`, `unresolve` | 1 d |
 | **M5 — Agent docs** | README with JSON schemas, an end-to-end agent workflow example, exit codes | 0.5 d |

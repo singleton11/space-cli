@@ -173,14 +173,16 @@ All performed on `AMPER` review #3842 (`1aqmHR0AKmNT`, commit-set review) — th
 | File | Content |
 |---|---|
 | `projects.json` | `GET /projects` page 1 |
-| `reviews-list.json` | MR list, IJ, `state=Opened` sorted `LastUpdatedDesc` |
+| `reviews-list.json` | MR list, IJ, `state=Opened`, `type=MergeRequest`, sorted `LastUpdatedDesc` — recaptured in M2 with the working list projection incl. `branchPair` |
 | `review-show.json` | MR #233811 with branchPair, participants, counters |
 | `review-own.json` | Commit-set review #3842 (spike target) |
 | `review-files.json` | Files in review #3842 with `change.new.path` |
 | `feed-messages.json` | Review feed channel messages (timeline events) |
+| `feed-channel-projected.json` | M2: feed channel under the pinned lean projection — 29 messages, 10 `CodeDiscussionAddedFeedEvent`s |
 | `feed-discussion-event.json` | `CodeDiscussionAddedFeedEvent` with full discussion record |
 | `discussion-created.json` | Discussion created via API (write-path proof) |
-| `unbound-discussions.json` | Unbound (review-level) discussion list |
+| `thread-messages.json` | M2: a discussion's thread channel under the pinned projection — root comment + one reply |
+| `unbound-discussions.json` | Unbound (review-level) discussion list — recaptured in M2 under the pinned projection; includes one deleted-message ghost (empty text + author) |
 | `text-content-at-revision.json` | `text-content` response at an anchor revision |
 
 ## 7. Open items for M1+
@@ -189,3 +191,33 @@ All performed on `AMPER` review #3842 (`1aqmHR0AKmNT`, commit-set review) — th
 2. `batchInfo` (opaque) in `chats/messages/sync-batch` — not needed for v1; polling by `startFromDate` is enough.
 3. M2 websocket protocol (used by the web UI for anchored-discussion resolve) — reverse-engineering is a possible post-v1 project if resolve-for-anchored becomes a hard requirement.
 4. `ReviewIdentifier.Key` / `.Number` variants exist; we pin `.Id` (list responses give ids).
+
+---
+## 8. M2 read-path pins (2026-11-05, live on jetbrains.team)
+
+Everything below was probed read-only against the live instance while building `reviews list` / `comments list`.
+
+### Project identifiers — bare keys 404
+`key:XX`, `id:XX`, and bare project **ids** work in API paths; bare project **keys** (e.g. `IJ`) do not (`not-found: "Active project with ID IJ not found"`). The CLI therefore auto-prefixes colon-less `--project` values with `key:`; `key:`/`id:`-prefixed values pass through.
+
+### `chats/messages` — projections are mandatory
+- **Without `$fields` the response is id-only messages** (`messages: [{id}]`). The pinned projections:
+  - Feed (timeline): `messages(id,details(className,codeDiscussion(id,anchor(repository,revision,filename,line,oldLine),channel(id),resolvable,resolved,snippet(lines(text,oldLineNum,newLineNum))))),nextStartFromDate`
+  - Thread (replies): `messages(id,time,text,author(name)),nextStartFromDate`
+- `nextStartFromDate` must be listed in the projection or it is stripped as well.
+- **Continuation:** response `nextStartFromDate` is an object `{iso, timestamp}`; the next request passes `startFromDate=<iso>` (OpenAPI: `startFromDate`, `format: date-time`). Verified live: batches advance. A full batch (`== batchSize`, max 50) means "there may be more"; a short batch ends pagination.
+- `sorting=FromOldestToNewest` puts the **root comment first** in a discussion's thread channel; everything after index 0 is a reply. (Note: resolve/unresolve also posts real messages into the thread — e.g. "User resolved the discussion" — and they show up as replies.)
+
+### Reviews list
+- Projection `data(review(id,number,title,state,createdAt,discussionCounter,branchPair)),totalCount` works, including `branchPair` (whole or with nested subfield names). Commit-set review items have no `branchPair` by definition and report **`createdAt: 0`** — the CLI normalizes 0 → null.
+- `$top` accepted up to 500; pagination via `$skip` (response `next` = next skip offset, only present when listed in `$fields`).
+- The `repository` filter applies to **both** review types: merge requests via `branchPair.repository`, commit-set reviews via their per-file repositories (verified: 12445 = 2511 MR + 9934 CSR unfiltered; `repository=ultimate` → 2311 MR + 9711 CSR).
+
+### Unbound (review-level) discussions
+- Endpoint needs the usual project prefix (`key:AMPER`; bare `AMPER` 404s). Projection: `data(id,resolved,item(id,text,time,author(name))),totalCount` (default response is minimal — `item` comes back id-only without `$fields`).
+- `resolved: null` = never toggled → treat as `false`.
+- **Ghost records:** deleting the backing chat message (`chats/messages/delete-message`, the only REST cleanup) leaves the discussion record in the list with **empty text AND empty author**. `comments list` filters these out.
+
+### Live E2E verified
+- MR 222964 (`3XMLGJ3wtYmM`, IJ): 81 threads (41 anchored + 40 review-level), reply chains up to 33 messages, multi-batch feed pagination, ~125 requests in 1.9 s, no rate limiting.
+- Filters `--file` / `--author` / `--unresolved` / `--state` / `--text` / `--repo` all behave as documented above.

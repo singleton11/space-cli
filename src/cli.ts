@@ -1,8 +1,9 @@
-import { Command, CommanderError } from 'commander';
+import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { resolveConfig } from './lib/config.js';
 import { SpaceCliError } from './lib/errors.js';
 import { SpaceClient } from './lib/http.js';
-import { getReview } from './lib/reviews.js';
+import { listComments } from './lib/comments.js';
+import { DEFAULT_LIST_LIMIT, getReview, listReviews } from './lib/reviews.js';
 
 export interface RunIo {
   /** Environment variables (usually `process.env`). */
@@ -15,6 +16,8 @@ export interface RunIo {
   stderr: (s: string) => void;
 }
 
+const PROJECT_HELP = 'project key (e.g. IJ); prefix with id: to use a raw project id';
+
 /**
  * Run the CLI with explicit argv (no leading node/script args).
  * Returns the process exit code. Never touches the real stdout/stderr/env.
@@ -26,7 +29,6 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
     .description('Read, answer, and resolve JetBrains Space code review comments')
     .version('0.1.0')
     .option('--pretty', 'pretty-print JSON output (default: one compact line)');
-
   // Errors are data: suppress commander's human-readable stderr output and
   // emit a JSON envelope instead. Help/version go to stdout unaffected.
   program.configureOutput({
@@ -40,13 +42,61 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
     .command('show')
     .description('Get a single code review by record id')
     .argument('<reviewId>', 'review record id (e.g. 2AomjG0QgoiG)')
-    .requiredOption('--project <key>', 'project key (e.g. IJ) or project id')
+    .requiredOption('--project <key>', PROJECT_HELP)
     .action(async (reviewId: string, options: { project: string }) => {
       const config = resolveConfig({ env: io.env, home: io.home });
       const client = new SpaceClient(config.url, config.token);
       const review = await getReview(client, options.project, reviewId);
-      const pretty = program.opts<{ pretty?: boolean }>().pretty ?? false;
-      io.stdout(`${JSON.stringify(review, null, pretty ? 2 : undefined)}\n`);
+      emitJson(io, program, review);
+    });
+  reviews
+    .command('list')
+    .description('List code reviews in a project, newest activity first (server default sort)')
+    .requiredOption('--project <key>', PROJECT_HELP)
+    .option('--repo <name>', 'only reviews in this repository')
+    .addOption(
+      new Option('--state <state>', 'only reviews in this state')
+        .choices(['Opened', 'Closed', 'RequiresAuthorAttention', 'NeedsReview', 'Merged']),
+    )
+    .option('--author <profileId>', 'only reviews authored by this profile id')
+    .option('--reviewer <profileId>', 'only reviews with this reviewer profile id')
+    .option('--text <query>', 'only reviews whose title matches this text query')
+    .option('--limit <n>', `max reviews to return (default ${DEFAULT_LIST_LIMIT})`, parsePositiveInt, DEFAULT_LIST_LIMIT)
+    .action(async (options: ReviewsListOptions) => {
+      const config = resolveConfig({ env: io.env, home: io.home });
+      const client = new SpaceClient(config.url, config.token);
+      const result = await listReviews(client, options.project, {
+        state: options.state,
+        text: options.text,
+        author: options.author,
+        reviewer: options.reviewer,
+        repository: options.repo,
+      }, options.limit);
+      emitJson(io, program, result);
+    });
+
+  const comments = program.command('comments');
+  comments
+    .command('list')
+    .description(
+      'List comment threads of a review (anchored file/line comments and review-level comments), ' +
+        'oldest first. Each item carries its anchor, snippet, and replies. ' +
+        'The "outdated" field is null in v1 until revision comparison ships.',
+    )
+    .requiredOption('--review <reviewId>', 'review record id')
+    .requiredOption('--project <key>', PROJECT_HELP)
+    .option('--file <path>', 'only anchored comments on this exact file path')
+    .option('--author <user>', 'only threads whose root comment author (username) matches exactly')
+    .option('--unresolved', 'only unresolved threads')
+    .action(async (options: CommentsListOptions) => {
+      const config = resolveConfig({ env: io.env, home: io.home });
+      const client = new SpaceClient(config.url, config.token);
+      const result = await listComments(client, options.project, options.review, {
+        file: options.file,
+        author: options.author,
+        unresolved: options.unresolved,
+      });
+      emitJson(io, program, { reviewId: options.review, comments: result });
     });
 
   try {
@@ -65,6 +115,37 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
     emitError(io, toSpaceCliError(e));
     return 1;
   }
+}
+
+interface ReviewsListOptions {
+  project: string;
+  repo?: string;
+  state?: string;
+  author?: string;
+  reviewer?: string;
+  text?: string;
+  limit: number;
+}
+
+interface CommentsListOptions {
+  review: string;
+  project: string;
+  file?: string;
+  author?: string;
+  unresolved?: boolean;
+}
+
+function parsePositiveInt(value: string): number {
+  const n = Number.parseInt(value, 10);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new InvalidArgumentError('must be a positive integer');
+  }
+  return n;
+}
+
+function emitJson(io: RunIo, program: Command, value: unknown): void {
+  const pretty = program.opts<{ pretty?: boolean }>().pretty ?? false;
+  io.stdout(`${JSON.stringify(value, null, pretty ? 2 : undefined)}\n`);
 }
 
 function emitError(io: RunIo, error: SpaceCliError): void {

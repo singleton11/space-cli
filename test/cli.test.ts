@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { run } from '../src/cli.js';
 
@@ -70,8 +71,10 @@ describe('run — reviews show', () => {
     expect(io.out.join('').endsWith('\n')).toBe(true);
 
     const request = (fetchMock as unknown as { mock: { calls: Request[][] } }).mock.calls[0]![0]!;
+    // Bare project keys are auto-prefixed with `key:` — pinned live: bare keys
+    // 404 with "Active project with ID IJ not found" on jetbrains.team.
     expect(request.url).toBe(
-      'https://jetbrains.team/api/http/projects/IJ/code-reviews/2AomjG0QgoiG?%24fields=' +
+      'https://jetbrains.team/api/http/projects/key%3AIJ/code-reviews/2AomjG0QgoiG?%24fields=' +
         encodeURIComponent(
           'id,number,title,state,createdAt,feedChannelId,branchPair,participants,reviewers,discussionCounter,commits',
         ),
@@ -157,5 +160,137 @@ describe('run — reviews show', () => {
     const code = await run([], { env: ENV, home: NO_HOME, ...io });
     // commander with no command and no error: shows help, exit code 1 by default.
     expect(code).toBe(1);
+  });
+});
+
+function loadFixture(name: string): unknown {
+  return JSON.parse(readFileSync(new URL(`../fixtures/${name}`, import.meta.url), 'utf8'));
+}
+
+/** A fetch stub that routes by URL and returns a fresh Response per call. */
+function stubFetchRouter(route: (url: string) => unknown): typeof fetch {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const body = route(url);
+    if (body === undefined) throw new Error(`no fetch route for ${url}`);
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as unknown as typeof fetch;
+}
+
+describe('run — reviews list', () => {
+  it('emits {totalCount, reviews} with filters mapped to query params', async () => {
+    const listBody = loadFixture('reviews-list.json');
+    let call = 0;
+    const fetchMock = stubFetchRouter(() => {
+      call += 1;
+      return call === 1 ? listBody : { totalCount: (listBody as { totalCount: number }).totalCount, data: [] };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const io = makeIo();
+    const code = await run(
+      ['reviews', 'list', '--project', 'IJ', '--state', 'Opened', '--text', 'mcp', '--limit', '10'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(0);
+    expect(io.err).toEqual([]);
+    const parsed = JSON.parse(io.out.join(''));
+    expect(parsed.totalCount).toBe(2513);
+    expect(parsed.reviews).toHaveLength(5); // fixture page; second page empty
+    expect(parsed.reviews[0]).toMatchObject({ kind: 'mergeRequest' });
+    const url = new URL((fetchMock as unknown as { mock: { calls: Request[][] } }).mock.calls[0]![0]!.url);
+    expect(url.pathname).toBe('/api/http/projects/key%3AIJ/code-reviews');
+    expect(url.searchParams.get('state')).toBe('Opened');
+    expect(url.searchParams.get('text')).toBe('mcp');
+    expect(url.searchParams.get('$top')).toBe('10');
+    expect(url.searchParams.get('$skip')).toBe('0');
+  });
+  it('rejects an invalid --state as usage-error without any request', async () => {
+    const io = makeIo();
+    const code = await run(['reviews', 'list', '--project', 'IJ', '--state', 'Open'], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
+  });
+  it('rejects a non-integer --limit as usage-error', async () => {
+    const io = makeIo();
+    const code = await run(['reviews', 'list', '--project', 'IJ', '--limit', 'abc'], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
+  });
+});
+
+describe('run — comments list', () => {
+  const FEED_CHANNEL = '4Q1Lo73xJbml';
+  function commentsRoute(url: string): unknown {
+    if (url.includes('/code-reviews/rev1?')) return { feedChannelId: FEED_CHANNEL };
+    if (url.includes('/code-reviews/rev1/unbound-discussions')) {
+      return loadFixture('unbound-discussions.json');
+    }
+    if (url.includes(`/chats/messages`) && url.includes(`channel=${FEED_CHANNEL}`)) {
+      return loadFixture('feed-channel-projected.json');
+    }
+    if (url.includes('/chats/messages')) return loadFixture('thread-messages.json');
+    return undefined;
+  }
+  it('emits {reviewId, comments} with anchored + review-level threads', async () => {
+    vi.stubGlobal('fetch', stubFetchRouter(commentsRoute));
+    const io = makeIo();
+    const code = await run(['comments', 'list', '--review', 'rev1', '--project', 'IJ'], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(0);
+    expect(io.err).toEqual([]);
+    const parsed = JSON.parse(io.out.join(''));
+    expect(parsed.reviewId).toBe('rev1');
+    expect(parsed.comments).toHaveLength(11); // 10 anchored + 1 review-level (ghost filtered)
+    const mcp = parsed.comments.find((c: { id: string }) => c.id === '1mZGCe08o6SN');
+    expect(mcp).toMatchObject({
+      kind: 'anchored',
+      author: 'Alexander.Gusakov',
+      resolved: true,
+      anchor: { file: 'language-server/features-impl/db-connectivity/src/commands/mcp.kt', line: 71 },
+    });
+  });
+  it('--unresolved keeps only unresolved threads', async () => {
+    vi.stubGlobal('fetch', stubFetchRouter(commentsRoute));
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'list', '--review', 'rev1', '--project', 'IJ', '--unresolved'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(0);
+    const parsed = JSON.parse(io.out.join(''));
+    expect(parsed.comments).toHaveLength(7);
+  });
+  it('a missing review (null body) is a not-found envelope, exit 1', async () => {
+    vi.stubGlobal('fetch', stubFetchRouter(() => null));
+    const io = makeIo();
+    const code = await run(['comments', 'list', '--review', 'nope', '--project', 'IJ'], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(1);
+    expect(io.out).toEqual([]);
+    expect(JSON.parse(io.err.join('')).error).toBe('not-found');
+  });
+  it('--review is required', async () => {
+    const io = makeIo();
+    const code = await run(['comments', 'list', '--project', 'IJ'], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
   });
 });
