@@ -53,6 +53,7 @@ describe('fetchReviewRevisions', () => {
     await fetchReviewRevisions(client, 'key%3AIJ/code-reviews/r1');
     expect(calls).toEqual([
       {
+        method: 'get',
         path: '/projects/key%3AIJ/code-reviews/r1/details',
         params: { $fields: 'commits(repository(name),commits(commit(id,parents,commitDate)))' },
       },

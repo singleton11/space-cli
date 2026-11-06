@@ -191,6 +191,42 @@ export async function listComments(
   return enrichAnchors(client, projectPath, reviewPath, comments, options);
 }
 
+/**
+ * Locate a single comment thread by its discussion id — the id M4's
+ * reply/resolve/unresolve take as `--comment`. Walks the same discovery
+ * surfaces as {@link listComments} (feed channel + unbound-discussions;
+ * there is no get-discussion-by-id REST endpoint) but skips anchor
+ * enrichment, so `outdated` is `null` and `anchor.diffContext` is absent.
+ *
+ * Returns `null` when the review exists but has no such comment.
+ */
+export async function findCommentById(
+  client: SpaceClient,
+  project: string,
+  reviewId: string,
+  commentId: string,
+): Promise<Comment | null> {
+  const projectPath = encodeURIComponent(projectParam(project));
+  const reviewPath = `${projectPath}/code-reviews/${encodeURIComponent(reviewId)}`;
+
+  const feedChannelId = await fetchFeedChannelId(client, reviewPath, reviewId);
+
+  for (const discussion of await fetchFeedDiscussions(client, feedChannelId)) {
+    if (discussion.id !== commentId) continue;
+    if (discussion.channelId === null) {
+      throw new SpaceCliError(
+        'protocol-error',
+        `Discussion ${discussion.id} has no thread channel id; cannot read its messages`,
+      );
+    }
+    const messages = await fetchChannelMessages(client, discussion.channelId, THREAD_FIELDS);
+    return toAnchoredComment(discussion, messages, reviewId);
+  }
+
+  const reviewLevel = await fetchReviewLevelComments(client, reviewPath, reviewId, feedChannelId);
+  return reviewLevel.find((c) => c.id === commentId) ?? null;
+}
+
 async function enrichAnchors(
   client: SpaceClient,
   projectPath: string,

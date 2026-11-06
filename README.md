@@ -32,10 +32,37 @@ space-cli reviews list --project KEY [--repo NAME] [--state STATE] …     (M2 �
 space-cli reviews show <reviewId> --project KEY                          (M1 ✅)
 space-cli comments list --review <reviewId> --project KEY …              (M2 ✅)
                         [--diff-context N]                               (M3 ✅)
-space-cli comments reply --comment <commentId> (--text "…" | --stdin)     (M4)
-space-cli comments resolve --comment <commentId>                         (M4)
-space-cli comments unresolve --comment <commentId>                       (M4)
+space-cli comments reply --comment <commentId> --review <reviewId>
+                        --project KEY (--text "…" | --stdin)             (M4 ✅)
+space-cli comments resolve --comment <commentId> --review <reviewId>
+                        --project KEY                                    (M4 ✅)
+space-cli comments unresolve --comment <commentId> --review <reviewId>
+                        --project KEY                                   (M4 ✅)
 ```
+
+`--comment` takes the `id` from `comments list` output. The mutation commands
+also need `--review`/`--project` because Space exposes no
+get-discussion-by-id endpoint — the CLI locates the comment by walking the
+review's discovery surfaces (same ones `comments list` uses).
+
+### Mutations (reply / resolve / unresolve)
+
+- **No guardrails.** Mutations run immediately: no confirmation, no dry-run,
+  no undo. A reply is posted as the token owner and cannot be deleted through
+  this CLI.
+- `comments reply` posts the text into the thread's channel. Space replies
+  are **flat** — no parent-message id; for review-level comments the thread
+  channel is the whole review channel. `--stdin` reads the text from stdin
+  (a single trailing newline is stripped); exactly one of `--text`/`--stdin`
+  is required.
+- `comments resolve` / `unresolve` toggle the **whole thread** (Space resolves
+  threads, not single messages) and verify the result by reading the thread
+  state back — the reported `resolved` is always Space's answer, never assumed.
+- **Platform limitation:** anchored (file/line) threads **cannot be resolved
+  through Space's public REST API** (the web UI uses a private websocket
+  protocol). `resolve`/`unresolve` fail for them with error code
+  `platform-limitation` — reply to the thread instead, or resolve it in the
+  Space web UI.
 
 `--project` takes the project **key** (e.g. `key:IJ`) or project id. `--pretty`
 indents JSON output.

@@ -16,17 +16,50 @@ export class SpaceClient {
 
   /** GET a JSON resource. `path` is relative to `/api/http`, e.g. `/projects/IJ/code-reviews/...`. */
   async get<T = unknown>(path: string, params?: QueryParams): Promise<T> {
+    const url = this.url(path, params);
+    return this.request<T>('GET', url, path);
+  }
+
+  /**
+   * POST a JSON body to an API resource and parse the JSON response.
+   * A 200 with an empty body (Space does this for some mutations)
+   * resolves to `undefined`.
+   */
+  async post<T = unknown>(path: string, body?: unknown): Promise<T> {
+    const url = this.url(path);
+    return this.request<T>('POST', url, path, body);
+  }
+
+  /** PATCH a JSON body to an API resource; same semantics as {@link post}. */
+  async patch<T = unknown>(path: string, body?: unknown): Promise<T> {
+    const url = this.url(path);
+    return this.request<T>('PATCH', url, path, body);
+  }
+
+  private url(path: string, params?: QueryParams): URL {
     const url = new URL(this.apiBase + path);
     for (const [key, value] of Object.entries(params ?? {})) {
       if (value === undefined || value === null) continue;
       url.searchParams.set(key, String(value));
     }
+    return url;
+  }
 
+  private async request<T>(
+    method: string,
+    url: URL,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${this.token}`,
+      accept: 'application/json',
+    };
+    if (body !== undefined) headers['content-type'] = 'application/json';
     const request = new Request(url, {
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        accept: 'application/json',
-      },
+      method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
 
     let response: Response;
@@ -38,10 +71,15 @@ export class SpaceClient {
         `request to ${url.href} failed: ${errorDetail(e)}`,
       );
     }
-    return (await this.parseBody(response, url, path)) as T;
+    return (await this.parseBody(response, url, path, method)) as T;
   }
 
-  private async parseBody(response: Response, url: URL, path: string): Promise<unknown> {
+  private async parseBody(
+    response: Response,
+    url: URL,
+    path: string,
+    method: string,
+  ): Promise<unknown> {
     const text = await response.text();
     if (response.ok) {
       if (text === '') return undefined;
@@ -50,7 +88,7 @@ export class SpaceClient {
       } catch {
         throw new SpaceCliError(
           'protocol-error',
-          `Space returned a non-JSON 200 body for GET ${path}: ${text.slice(0, 200)}`,
+          `Space returned a non-JSON 200 body for ${method} ${path}: ${text.slice(0, 200)}`,
         );
       }
     }
@@ -69,7 +107,7 @@ export class SpaceClient {
     }
     throw new SpaceCliError(
       'http-error',
-      `Space returned HTTP ${response.status} for GET ${path}` +
+      `Space returned HTTP ${response.status} for ${method} ${path}` +
         (text === '' ? ' (empty body)' : `: ${text.slice(0, 200)}`),
       response.status,
     );

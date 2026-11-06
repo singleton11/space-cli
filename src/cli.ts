@@ -3,6 +3,7 @@ import { resolveConfig } from './lib/config.js';
 import { SpaceCliError } from './lib/errors.js';
 import { SpaceClient } from './lib/http.js';
 import { listComments } from './lib/comments.js';
+import { replyToComment, setCommentResolved } from './lib/mutations.js';
 import { DEFAULT_LIST_LIMIT, getReview, listReviews } from './lib/reviews.js';
 
 export interface RunIo {
@@ -14,6 +15,8 @@ export interface RunIo {
   stdout: (s: string) => void;
   /** Write a string to stderr. */
   stderr: (s: string) => void;
+  /** Read all of stdin until EOF (used by `comments reply --stdin`). */
+  stdin?: () => Promise<string>;
 }
 
 const PROJECT_HELP = 'project key (e.g. IJ); prefix with id: to use a raw project id';
@@ -108,6 +111,62 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
       emitJson(io, program, { reviewId: options.review, comments: result });
     });
 
+  comments
+    .command('reply')
+    .description(
+      'Post a reply into a comment thread. Replies are flat: Space threads are chat ' +
+        'channels, so there is no parent-message id — the text is appended to the thread. ' +
+        'For review-level comments the thread channel is the whole review channel. ' +
+        'The message is posted as the token owner. NO GUARDRAILS: no confirmation, no dry-run, no undo.',
+    )
+    .requiredOption('--comment <commentId>', 'comment (discussion) id from `comments list` output')
+    .requiredOption('--review <reviewId>', 'review record id the comment belongs to')
+    .requiredOption('--project <key>', PROJECT_HELP)
+    .option('--text <text>', 'reply text')
+    .option('--stdin', 'read the reply text from stdin instead of --text (a single trailing newline is stripped)')
+    .action(async (options: ReplyOptions) => {
+      const text = await readReplyText(options, io);
+      const config = resolveConfig({ env: io.env, home: io.home });
+      const client = new SpaceClient(config.url, config.token);
+      const result = await replyToComment(client, options.project, options.review, options.comment, text);
+      emitJson(io, program, result);
+    });
+
+  comments
+    .command('resolve')
+    .description(
+      'Mark a review-level comment thread as resolved (Space resolves whole threads, not single messages; ' +
+        'state is verified by reading the thread back). PLATFORM LIMITATION: anchored (file/line) threads ' +
+        'cannot be resolved through the Space public REST API — for them this fails with error code ' +
+        '"platform-limitation"; reply to the thread instead, or resolve it in the Space web UI. ' +
+        'NO GUARDRAILS: no confirmation, no dry-run, no undo.',
+    )
+    .requiredOption('--comment <commentId>', 'comment (discussion) id from `comments list` output')
+    .requiredOption('--review <reviewId>', 'review record id the comment belongs to')
+    .requiredOption('--project <key>', PROJECT_HELP)
+    .action(async (options: MutationOptions) => {
+      const config = resolveConfig({ env: io.env, home: io.home });
+      const client = new SpaceClient(config.url, config.token);
+      const result = await setCommentResolved(client, options.project, options.review, options.comment, true);
+      emitJson(io, program, result);
+    });
+
+  comments
+    .command('unresolve')
+    .description(
+      'Reopen a previously resolved review-level comment thread (the inverse of `resolve`, same ' +
+        'platform limitation for anchored threads and same no-guardrails policy).',
+    )
+    .requiredOption('--comment <commentId>', 'comment (discussion) id from `comments list` output')
+    .requiredOption('--review <reviewId>', 'review record id the comment belongs to')
+    .requiredOption('--project <key>', PROJECT_HELP)
+    .action(async (options: MutationOptions) => {
+      const config = resolveConfig({ env: io.env, home: io.home });
+      const client = new SpaceClient(config.url, config.token);
+      const result = await setCommentResolved(client, options.project, options.review, options.comment, false);
+      emitJson(io, program, result);
+    });
+
   try {
     await program.parseAsync(argv, { from: 'user' });
     return 0;
@@ -143,6 +202,42 @@ interface CommentsListOptions {
   author?: string;
   unresolved?: boolean;
   diffContext?: number;
+}
+
+interface ReplyOptions {
+  comment: string;
+  review: string;
+  project: string;
+  text?: string;
+  stdin?: boolean;
+}
+
+interface MutationOptions {
+  comment: string;
+  review: string;
+  project: string;
+}
+
+/** Exactly one of --text / --stdin; the text must be non-empty. */
+async function readReplyText(options: ReplyOptions, io: RunIo): Promise<string> {
+  if (options.stdin === true && options.text !== undefined) {
+    throw new SpaceCliError('usage-error', '--text and --stdin are mutually exclusive');
+  }
+  let text: string;
+  if (options.stdin === true) {
+    if (io.stdin === undefined) {
+      throw new SpaceCliError('usage-error', '--stdin: no stdin source is available');
+    }
+    text = (await io.stdin()).replace(/\r?\n$/, '');
+  } else if (options.text !== undefined) {
+    text = options.text;
+  } else {
+    throw new SpaceCliError('usage-error', 'exactly one of --text or --stdin is required');
+  }
+  if (text.trim() === '') {
+    throw new SpaceCliError('usage-error', 'reply text must not be empty');
+  }
+  return text;
 }
 
 function parsePositiveInt(value: string): number {

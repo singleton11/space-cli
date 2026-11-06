@@ -14,6 +14,7 @@ describe('RepositoryFiles.blob', () => {
     expect(await files.blob('ultimate', A18B, STARTER)).toBe('479d543336b56b2d1fe8bb266c16c6ea96d524b8');
     expect(calls).toEqual([
       {
+        method: 'get',
         path: '/projects/key%3AIJ/repositories/ultimate/files',
         params: { commit: A18B, path: STARTER, $fields: 'path,blob,type' },
       },
@@ -76,6 +77,7 @@ describe('RepositoryFiles.textLines', () => {
     const lines = await new RepositoryFiles(client, 'key%3AAMPER').textLines('amper', 'rev', 'KnownAgents.kt');
     expect(lines).toHaveLength(96);
     expect(calls[0]).toEqual({
+      method: 'get',
       path: '/projects/key%3AAMPER/repositories/amper/text-content',
       params: { commit: 'rev', path: 'KnownAgents.kt', $fields: 'type,lines(text)' },
     });

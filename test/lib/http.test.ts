@@ -117,3 +117,71 @@ describe('SpaceClient.get', () => {
     await expect(promise).rejects.toMatchObject({ code: 'protocol-error' });
   });
 });
+
+describe('SpaceClient.post/patch', () => {
+  it('POSTs a JSON body with content-type and parses the response', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { id: 'msg1', text: 'hi' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new SpaceClient(BASE, 'tok');
+    const result = await client.post<{ id: string }>('/chats/messages/send', {
+      channel: 'ch1',
+      text: 'hi',
+    });
+
+    expect(result).toEqual({ id: 'msg1', text: 'hi' });
+    const request = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(request.method).toBe('POST');
+    expect(request.url).toBe('https://jetbrains.team/api/http/chats/messages/send');
+    expect(request.headers.get('authorization')).toBe('Bearer tok');
+    expect(request.headers.get('content-type')).toBe('application/json');
+    await expect(request.text()).resolves.toBe('{"channel":"ch1","text":"hi"}');
+  });
+
+  it('PATCHes a JSON body and resolves empty 200 bodies to undefined', async () => {
+    const fetchMock = vi.fn(async () => textResponse(200, ''));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new SpaceClient(BASE, 'tok');
+    const result = await client.patch('/projects/IJ/code-reviews/r/unbound-discussions/d/toggle', {
+      resolved: true,
+    });
+
+    expect(result).toBeUndefined();
+    const request = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(request.method).toBe('PATCH');
+    expect(request.headers.get('content-type')).toBe('application/json');
+    await expect(request.text()).resolves.toBe('{"resolved":true}');
+  });
+
+  it('passes Space error envelopes through verbatim on mutations', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          await jsonResponse(500, {
+            error: 'internal-server-error',
+            error_description: 'Cannot toggle a bound discussion',
+          }),
+      ),
+    );
+
+    const client = new SpaceClient(BASE, 'tok');
+    const promise = client.patch('/projects/IJ/code-reviews/r/unbound-discussions/d/toggle', {
+      resolved: true,
+    });
+    await expect(promise).rejects.toMatchObject({
+      code: 'internal-server-error',
+      description: 'Cannot toggle a bound discussion',
+      status: 500,
+    });
+  });
+
+  it('wraps non-JSON mutation error bodies as http-error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => await textResponse(400, 'Bad param')));
+
+    const client = new SpaceClient(BASE, 'tok');
+    const promise = client.post('/chats/messages/send', { channel: 'ch1', text: 'hi' });
+    await expect(promise).rejects.toMatchObject({ code: 'http-error', status: 400 });
+  });
+});

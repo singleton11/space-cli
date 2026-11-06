@@ -63,9 +63,10 @@ space-cli reviews show <reviewId> [--project KEY]
 space-cli comments list --review <reviewId> [--project KEY]
                         [--file PATH] [--author USER] [--unresolved]
                         [--diff-context LINES]
-space-cli comments reply --comment <commentId> (--text "..." | --stdin)
-space-cli comments resolve --comment <commentId>
-space-cli comments unresolve --comment <commentId>
+space-cli comments reply --comment <commentId> --review <reviewId> --project KEY
+                        (--text "..." | --stdin)
+space-cli comments resolve --comment <commentId> --review <reviewId> --project KEY
+space-cli comments unresolve --comment <commentId> --review <reviewId> --project KEY
 ```
 
 **Comment output shape (field names pinned in Step 0 — API mapping in `docs/api-notes.md`):**
@@ -137,7 +138,7 @@ This plan deliberately does **not** claim exact Space endpoint paths. Step 0 pin
 | **M1 — Skeleton** | Config/env, HTTP client, auth, JSON output + error envelope, `reviews show` — ✅ **DONE 2026-11-05** (TypeScript/Node, commander, vitest: 33 tests incl. golden fixture tests; live E2E on jetbrains.team verified: MR + commit-set reviews, not-found path) | 0.5–1 d |
 | **M2 — Read path** | `reviews list` (filters, pagination), `comments list` (threads, anchors, filters) — ✅ **DONE 2026-11-05** (31 new tests, 64 total; live E2E on jetbrains.team: 81-thread review with feed pagination + 40 review-level threads, `--file`/`--author`/`--unresolved` filters, deleted-message ghost filtering; bare project keys now auto-prefixed `key:` — bare keys 404 live, fixing the M1 trap; `--project` escape hatches: `key:XX` / `id:XX`) | 1–2 d |
 | **M3 — Diff context** | `--diff-context`: revision content fetch, hunk builder, `outdated` flag — ✅ **DONE 2026-11-05** (42 new tests, 106 total, incl. golden tests on 5 new live fixtures; live E2E on jetbrains.team: unrebased MR, 81-thread rebased MR with left-side + cross-side range anchors, commit-set review with disjoint commits — 451 snippet lines cross-checked against fetched content. Findings fixed on the way: **Space line numbers are 0-based → output is now 1-based everywhere** (changes M2 output by +1); multi-line ranges (`endAnchor`) now exposed as `anchor.end`; `outdated` compares file blobs instead of revisions — api-notes §9) | 1 d |
-| **M4 — Mutations** | `comments reply`, `resolve`, `unresolve` | 1 d |
+| **M4 — Mutations** | `comments reply`, `resolve`, `unresolve` — ✅ **DONE 2026-11-06** (29 new tests, 134 total; all three commands take `--comment` + `--review` + `--project` — Space has no get-discussion-by-id endpoint, so the CLI locates the comment via the review's discovery surfaces, no anchor enrichment; replies are flat `POST /chats/messages/send`, `--text`/`--stdin` mutually exclusive, one trailing newline stripped; resolve/unresolve toggle review-level threads via the pinned unbound-discussions PATCH and **verify state by read-back** (`resolved` in output is always Space's answer); anchored threads fail with the pinned `platform-limitation` error — not faked; `platform-limitation` added to CLI error codes; mutation help text documents no-guardrails + the limitation. **Live E2E on jetbrains.team** (closed own review 4UFkjw4bqG4W): replies posted to both an anchored and a review-level thread (one via `--stdin`), resolve→unresolve round-trip verified by read-back, anchored resolve correctly refused with exit 1; both test replies deleted via `chats/messages/delete-message`, review restored to its prior state; send response shape pinned — full flat message record, api-notes §5) | 1 d |
 | **M5 — Agent docs** | README with JSON schemas, an end-to-end agent workflow example, exit codes | 0.5 d |
 
 ~**5–6 focused days** total. Core logic lives in `src/lib/` from M1 so a future MCP wrapper is trivial.

@@ -19,6 +19,7 @@ export const CLI_ERROR_CODES = [
   'network-error',
   'http-error',
   'protocol-error',
+  'platform-limitation',
   'unexpected-error',
 ] as const;
 

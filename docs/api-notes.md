@@ -109,6 +109,8 @@ Returns the full discussion record incl. `channel.id` (reply target) — no lead
 
 Reply body: `{ "channel": "<discussion channel id>", "text": "…" }` — **replies are flat**: a thread is a chat channel; there is no parent-message id. "Reply to comment X" == post to X's thread channel. (For an MR's top-level channel, a message + `POST .../{reviewId}/unbound-discussions {channelItemId}` makes a review-level comment.)
 
+Send response (**pinned live 2026-11-06, space-cli M4 round-trip**): the full flat message record `{id, text, time (epoch ms), author: {name}}` — same shape as `chats/messages` items, usable directly as the `id` for `chats/messages/delete-message` cleanup.
+
 ### Resolve / unresolve — ⚠ the one real gap
 
 - **Unbound (review-level) discussions: supported.**

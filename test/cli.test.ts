@@ -335,3 +335,187 @@ describe('run — comments list', () => {
     expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
   });
 });
+
+/** A fetch stub that routes by URL *and* method and records request bodies. */
+function stubMutationFetch(
+  route: (url: URL, method: string, requestBody: unknown) => unknown,
+): { fetch: typeof fetch; requests: Array<{ method: string; url: string; body: unknown }> } {
+  const requests: Array<{ method: string; url: string; body: unknown }> = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const request = input instanceof Request ? input : new Request(input);
+    const url = new URL(request.url);
+    const raw = await request.text();
+    const body = route(url, request.method, raw === '' ? undefined : JSON.parse(raw));
+    requests.push({ method: request.method, url: url.href, body: raw === '' ? undefined : JSON.parse(raw) });
+    if (body === undefined) throw new Error(`no fetch route for ${request.method} ${url.href}`);
+    return new Response(body === '' ? '' : JSON.stringify(body), { status: 200 });
+  });
+  return { fetch: fetchMock as unknown as typeof fetch, requests };
+}
+
+describe('run — comments reply/resolve/unresolve (M4)', () => {
+  const FEED_CHANNEL = '4Q1Lo73xJbml';
+  const ANCHORED_ID = '1mZGCe08o6SN';
+  const ANCHORED_CHANNEL = 'qaVlL1x77TG';
+  const REVIEW_LEVEL_ID = '4fQkrd3xmHyz';
+
+  /** Golden discovery routing + writable mutation endpoints; `resolvedAfter` drives the read-back. */
+  function mutationsRoute(resolvedAfter: boolean) {
+    return (url: URL, method: string): unknown => {
+      const review = '/api/http/projects/key%3AIJ/code-reviews/rev1';
+      if (method === 'GET' && url.pathname === review) return { feedChannelId: FEED_CHANNEL };
+      if (method === 'GET' && url.pathname === '/api/http/chats/messages') {
+        return url.searchParams.get('channel') === FEED_CHANNEL
+          ? loadFixture('feed-channel-projected.json')
+          : loadFixture('thread-messages.json');
+      }
+      if (method === 'GET' && url.pathname === `${review}/unbound-discussions`) {
+        return url.searchParams.get('$fields') === 'data(id,resolved),totalCount'
+          ? { data: [{ id: REVIEW_LEVEL_ID, resolved: resolvedAfter }] }
+          : loadFixture('unbound-discussions.json');
+      }
+      if (method === 'POST' && url.pathname === '/api/http/chats/messages/send') {
+        return { id: 'msg-1', text: 'done', time: 1793800000000, author: { name: 'Anton.Prokhorov' } };
+      }
+      if (method === 'PATCH' && url.pathname === `${review}/unbound-discussions/${REVIEW_LEVEL_ID}/toggle`) {
+        return ''; // pinned live: 200 with an empty body
+      }
+      return undefined;
+    };
+  }
+
+  it('reply --text posts into the thread channel and emits the result', async () => {
+    const { fetch, requests } = stubMutationFetch(mutationsRoute(true));
+    vi.stubGlobal('fetch', fetch);
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'reply', '--comment', ANCHORED_ID, '--review', 'rev1', '--project', 'IJ', '--text', 'Fixed in abc123.'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+
+    expect(code).toBe(0);
+    expect(io.err).toEqual([]);
+    expect(JSON.parse(io.out.join(''))).toEqual({
+      commentId: ANCHORED_ID,
+      reviewId: 'rev1',
+      threadChannelId: ANCHORED_CHANNEL,
+      message: { id: 'msg-1', text: 'done', author: 'Anton.Prokhorov', createdAt: 1793800000000 },
+    });
+    const send = requests.find((r) => r.method === 'POST');
+    expect(send?.body).toEqual({ channel: ANCHORED_CHANNEL, text: 'Fixed in abc123.' });
+  });
+
+  it('reply --stdin reads stdin and strips one trailing newline', async () => {
+    const { fetch, requests } = stubMutationFetch(mutationsRoute(true));
+    vi.stubGlobal('fetch', fetch);
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'reply', '--comment', ANCHORED_ID, '--review', 'rev1', '--project', 'IJ', '--stdin'],
+      { env: ENV, home: NO_HOME, ...io, stdin: async () => 'piped reply\n' },
+    );
+
+    expect(code).toBe(0);
+    expect(requests.find((r) => r.method === 'POST')?.body).toEqual({
+      channel: ANCHORED_CHANNEL,
+      text: 'piped reply',
+    });
+  });
+
+  it('reply: --text and --stdin are mutually exclusive', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'reply', '--comment', 'x', '--review', 'rev1', '--project', 'IJ', '--text', 'a', '--stdin'],
+      { env: ENV, home: NO_HOME, ...io, stdin: async () => 'b' },
+    );
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
+  });
+
+  it('reply: exactly one of --text/--stdin is required', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'reply', '--comment', 'x', '--review', 'rev1', '--project', 'IJ'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
+  });
+
+  it('reply: empty text is a usage error', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'reply', '--comment', 'x', '--review', 'rev1', '--project', 'IJ', '--text', '  '],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
+  });
+
+  it('reply to an unknown comment id is a not-found envelope', async () => {
+    const { fetch } = stubMutationFetch(mutationsRoute(true));
+    vi.stubGlobal('fetch', fetch);
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'reply', '--comment', 'nope', '--review', 'rev1', '--project', 'IJ', '--text', 'hi'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(1);
+    expect(io.out).toEqual([]);
+    expect(JSON.parse(io.err.join('')).error).toBe('not-found');
+  });
+
+  it('resolve marks a review-level thread resolved, verifying the state by read-back', async () => {
+    const { fetch, requests } = stubMutationFetch(mutationsRoute(true));
+    vi.stubGlobal('fetch', fetch);
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'resolve', '--comment', REVIEW_LEVEL_ID, '--review', 'rev1', '--project', 'IJ'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(io.out.join(''))).toEqual({
+      commentId: REVIEW_LEVEL_ID,
+      reviewId: 'rev1',
+      resolved: true,
+    });
+    const patch = requests.find((r) => r.method === 'PATCH');
+    expect(patch?.url).toContain(`/unbound-discussions/${REVIEW_LEVEL_ID}/toggle`);
+    expect(patch?.body).toEqual({ resolved: true });
+    // The state was read back after the PATCH, via the lean projection.
+    const readBack = requests.find(
+      (r) =>
+        r.method === 'GET' &&
+        r.url.includes('/unbound-discussions') &&
+        new URL(r.url).searchParams.get('$fields') === 'data(id,resolved),totalCount',
+    );
+    expect(requests.indexOf(readBack!)).toBeGreaterThan(requests.indexOf(patch!));
+  });
+
+  it('unresolve reopens a review-level thread', async () => {
+    const { fetch, requests } = stubMutationFetch(mutationsRoute(false));
+    vi.stubGlobal('fetch', fetch);
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'unresolve', '--comment', REVIEW_LEVEL_ID, '--review', 'rev1', '--project', 'IJ'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(io.out.join(''))).toMatchObject({ resolved: false });
+    expect(requests.find((r) => r.method === 'PATCH')?.body).toEqual({ resolved: false });
+  });
+
+  it('resolve on an anchored thread fails with the documented platform-limitation envelope', async () => {
+    const { fetch, requests } = stubMutationFetch(mutationsRoute(true));
+    vi.stubGlobal('fetch', fetch);
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'resolve', '--comment', ANCHORED_ID, '--review', 'rev1', '--project', 'IJ'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(1);
+    expect(io.out).toEqual([]);
+    expect(JSON.parse(io.err.join(''))).toMatchObject({ error: 'platform-limitation' });
+    expect(requests.some((r) => r.method === 'PATCH')).toBe(false); // nothing was toggled
+  });
+});

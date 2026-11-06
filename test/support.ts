@@ -8,8 +8,10 @@ export function fixture<T = Record<string, unknown>>(name: string): T {
 
 export type Params = Record<string, string | number | boolean | undefined | null>;
 export interface Call {
+  method: 'get' | 'post' | 'patch';
   path: string;
   params: Params;
+  body?: unknown;
 }
 /** `body` is returned as-is; `respond` computes the body (and may throw to simulate API errors). */
 export type Route = { test: (path: string, params: Params) => boolean } & (
@@ -17,20 +19,37 @@ export type Route = { test: (path: string, params: Params) => boolean } & (
   | { respond: (path: string, params: Params) => unknown }
 );
 
-/** A SpaceClient double that records every GET and routes by path/params. */
+/** A SpaceClient double that records every request and routes by path/params. */
 export function routingClient(routes: Route[]): { calls: Call[]; client: never } {
   const calls: Call[] = [];
   const client = {
     async get<T>(path: string, params?: Params): Promise<T> {
-      calls.push({ path, params: { ...(params ?? {}) } });
-      for (const route of routes) {
-        if (!route.test(path, params ?? {})) continue;
-        return ('respond' in route ? route.respond(path, params ?? {}) : route.body) as T;
-      }
-      throw new Error(`no route for GET ${path}`);
+      return route<T>(calls, routes, 'get', path, params ?? {}, undefined);
+    },
+    async post<T>(path: string, body?: unknown): Promise<T> {
+      return route<T>(calls, routes, 'post', path, {}, body);
+    },
+    async patch<T>(path: string, body?: unknown): Promise<T> {
+      return route<T>(calls, routes, 'patch', path, {}, body);
     },
   };
   return { calls, client: client as never };
+}
+
+function route<T>(
+  calls: Call[],
+  routes: Route[],
+  method: Call['method'],
+  path: string,
+  params: Params,
+  body: unknown,
+): T {
+  calls.push({ method, path, params: { ...params }, body });
+  for (const route of routes) {
+    if (!route.test(path, params)) continue;
+    return ('respond' in route ? route.respond(path, params) : route.body) as T;
+  }
+  throw new Error(`no route for ${method.toUpperCase()} ${path}`);
 }
 
 export function notFound(): never {
