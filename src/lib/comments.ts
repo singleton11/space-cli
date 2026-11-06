@@ -1,7 +1,11 @@
 import type { SpaceClient } from './http.js';
+import { buildDiffContext, isOutdated } from './anchors.js';
+import { mapWithConcurrency } from './concurrency.js';
 import { SpaceCliError } from './errors.js';
+import { RepositoryFiles } from './files.js';
 import { asArray, asRecord, numberOrNull, prop, stringOrNull } from './json.js';
 import { projectParam } from './project.js';
+import { fetchReviewRevisions } from './revisions.js';
 
 /**
  * Stable output schema for `space-cli comments list` (see PLAN.md §5).
@@ -25,8 +29,11 @@ export interface Comment {
   /** Live thread state — Space resolves whole threads, not single messages. */
   resolved: boolean;
   /**
-   * `true` when anchor.revision differs from the review head. `null` until
-   * M3 wires the revision comparison; agents must not rely on it yet.
+   * Anchored comments: `false` guarantees the commented file is byte-identical
+   * at the current review head (base, for left-side anchors), so the anchor's
+   * line numbers are exact today. `true` means it changed, moved, or was
+   * deleted since the comment — locate the code via `snippet` text.
+   * `null` for review-level comments (nothing to be outdated).
    */
   outdated: boolean | null;
   /** Present for `anchored` comments; `null` for review-level ones. */
@@ -35,18 +42,49 @@ export interface Comment {
   replies: CommentReply[];
 }
 
+/**
+ * All line numbers in the output are 1-based (editor / `grep -n` numbering).
+ * Space itself counts from 0 (pinned in M3) — the CLI converts.
+ */
 export interface CommentAnchor {
   /** File path with Space's leading `/` normalized away. */
   file: string;
   repository: string | null;
-  /** Right-side (new) coordinate; `null` for review-level comments. */
+  /** Right-side (new file) line; `null` for left-side anchors. */
   line: number | null;
-  /** Left-side (old) coordinate; `null` for pure additions. */
+  /** Left-side (old file) line, set when the comment is on a deleted line; else `null`. */
   oldLine: number | null;
-  /** Commit the comment is anchored to. */
+  /** Commit of the side the anchor points into — the file `line`/`oldLine` index. */
   revision: string | null;
+  /** Last line of a multi-line range comment; `null` for single-line comments. */
+  end: AnchorEnd | null;
   /** Space's built-in snippet (what the reviewer saw), old/new line numbers included. */
   snippet: SnippetLine[];
+  /**
+   * Only with `--diff-context N`: the file at `revision`, N lines around the
+   * anchored line(s). `null` when unavailable (binary or missing file).
+   */
+  diffContext?: DiffContext | null;
+}
+
+/** Same coordinate scheme as the anchor; a range may end on the other diff side. */
+export interface AnchorEnd {
+  line: number | null;
+  oldLine: number | null;
+  revision: string | null;
+}
+
+export interface DiffContext {
+  /** Commit the content was read at (always `anchor.revision`). */
+  revision: string;
+  /** `new` when the lines are right-side (`line`) numbers, `old` for left-side (`oldLine`). */
+  side: 'new' | 'old';
+  lines: ContextLine[];
+}
+
+export interface ContextLine {
+  line: number;
+  text: string;
 }
 
 export interface SnippetLine {
@@ -72,6 +110,11 @@ export interface CommentFilters {
   unresolved?: boolean;
 }
 
+export interface CommentListOptions {
+  /** Attach `anchor.diffContext` with this many lines around each anchor. */
+  diffContext?: number;
+}
+
 /*
  * Pinned live (M2 probe, 2026-11-05, jetbrains.team):
  * - `chats/messages` WITHOUT `$fields` returns id-only messages — the
@@ -83,11 +126,13 @@ export interface CommentFilters {
  * - `batchSize` is hard-capped at 50 by the server.
  */
 const FEED_FIELDS =
-  'messages(id,details(className,codeDiscussion(id,anchor(repository,revision,filename,line,oldLine),channel(id),resolvable,resolved,snippet(lines(text,oldLineNum,newLineNum))))),nextStartFromDate';
+  'messages(id,details(className,codeDiscussion(id,anchor(repository,revision,filename,line,oldLine),endAnchor(revision,line,oldLine),channel(id),resolvable,resolved,snippet(lines(text,oldLineNum,newLineNum))))),nextStartFromDate';
 const THREAD_FIELDS = 'messages(id,time,text,author(name)),nextStartFromDate';
 const UNBOUND_FIELDS = 'data(id,resolved,item(id,text,time,author(name))),totalCount';
 const BATCH_SIZE = 50;
 const UNBOUND_PAGE_SIZE = 100;
+/** Parallel file lookups while enriching anchors (`outdated`, `diffContext`). */
+const FILE_CONCURRENCY = 8;
 
 /**
  * List all comment threads of a review: anchored (file/line) discussions
@@ -95,15 +140,21 @@ const UNBOUND_PAGE_SIZE = 100;
  * discussions from the dedicated endpoint. Threads are merged and sorted
  * chronologically, then filtered.
  *
+ * Anchored comments that survive the filters are then enriched: `outdated`
+ * (always) and `anchor.diffContext` (with `options.diffContext`).
+ *
  * Cost: 2 + N requests (feed pages + one message fetch per discussion thread
- * + unbound pages). Verified live that Space applies no rate limits at this
- * request volume.
+ * + unbound pages), plus for enrichment one `details` request and, per
+ * distinct file, ≤ 2 cheap blob lookups (+ one text fetch per distinct
+ * file/revision with `diffContext`). Verified live that Space applies no
+ * rate limits at this request volume.
  */
 export async function listComments(
   client: SpaceClient,
   project: string,
   reviewId: string,
   filters: CommentFilters = {},
+  options: CommentListOptions = {},
 ): Promise<Comment[]> {
   const projectPath = encodeURIComponent(projectParam(project));
   const reviewPath = `${projectPath}/code-reviews/${encodeURIComponent(reviewId)}`;
@@ -137,7 +188,31 @@ export async function listComments(
   if (filters.unresolved) {
     comments = comments.filter((c) => !c.resolved);
   }
-  return comments;
+  return enrichAnchors(client, projectPath, reviewPath, comments, options);
+}
+
+async function enrichAnchors(
+  client: SpaceClient,
+  projectPath: string,
+  reviewPath: string,
+  comments: Comment[],
+  options: CommentListOptions,
+): Promise<Comment[]> {
+  if (!comments.some((c) => c.anchor !== null)) return comments;
+  const revisions = await fetchReviewRevisions(client, reviewPath);
+  const files = new RepositoryFiles(client, projectPath);
+  return mapWithConcurrency(comments, FILE_CONCURRENCY, async (comment) => {
+    const anchor = comment.anchor;
+    if (anchor === null) return comment;
+    const outdated = await isOutdated(anchor, revisions, files);
+    if (options.diffContext === undefined) return { ...comment, outdated };
+    let diffContext: DiffContext | null = null;
+    if (anchor.repository !== null && anchor.revision !== null) {
+      const lines = await files.textLines(anchor.repository, anchor.revision, anchor.file);
+      diffContext = lines === null ? null : buildDiffContext(lines, anchor, options.diffContext);
+    }
+    return { ...comment, outdated, anchor: { ...anchor, diffContext } };
+  });
 }
 
 /** The review's timeline feed channel id — the discovery surface for discussions. */
@@ -166,6 +241,7 @@ interface RawDiscussion {
   channelId: string | null;
   resolved: boolean;
   anchor: Record<string, unknown> | null;
+  endAnchor: Record<string, unknown> | null;
   snippet: Record<string, unknown> | null;
 }
 
@@ -193,6 +269,7 @@ async function fetchFeedDiscussions(
       channelId: channel ? stringOrNull(prop(channel, 'id')) : null,
       resolved: prop(discussion, 'resolved') === true,
       anchor: asRecord(prop(discussion, 'anchor')),
+      endAnchor: asRecord(prop(discussion, 'endAnchor')),
       snippet: asRecord(prop(discussion, 'snippet')),
     });
   }
@@ -240,6 +317,7 @@ function toAnchoredComment(
   const snippetRecord = discussion.snippet;
   const snippetLines = snippetRecord ? asArray(prop(snippetRecord, 'lines')) : [];
   const anchor = discussion.anchor;
+  const end = discussion.endAnchor;
   return {
     id: discussion.id,
     reviewId,
@@ -255,13 +333,21 @@ function toAnchoredComment(
         ? {
             file: normalizeFilePath(stringOrNull(prop(anchor, 'filename')) ?? ''),
             repository: stringOrNull(prop(anchor, 'repository')),
-            line: numberOrNull(prop(anchor, 'line')),
-            oldLine: numberOrNull(prop(anchor, 'oldLine')),
+            line: lineNumber(prop(anchor, 'line')),
+            oldLine: lineNumber(prop(anchor, 'oldLine')),
             revision: stringOrNull(prop(anchor, 'revision')),
+            end:
+              end !== null
+                ? {
+                    line: lineNumber(prop(end, 'line')),
+                    oldLine: lineNumber(prop(end, 'oldLine')),
+                    revision: stringOrNull(prop(end, 'revision')),
+                  }
+                : null,
             snippet: snippetLines.map((line) => ({
               text: stringOrNull(prop(line, 'text')),
-              oldLineNum: numberOrNull(prop(line, 'oldLineNum')),
-              newLineNum: numberOrNull(prop(line, 'newLineNum')),
+              oldLineNum: lineNumber(prop(line, 'oldLineNum')),
+              newLineNum: lineNumber(prop(line, 'newLineNum')),
             })),
           }
         : null,
@@ -342,6 +428,17 @@ function toReply(message: Record<string, unknown>): CommentReply {
     createdAt: numberOrNull(prop(message, 'time')),
     text: stringOrNull(prop(message, 'text')),
   };
+}
+
+/*
+ * Pinned live (M3 probe): Space line coordinates are 0-based — anchor.line 71
+ * is `text-content` lines[71], verified against snippets and file content on
+ * 50+ anchors (both sides). Output is 1-based so agents can use it directly
+ * with editors, `sed -n`, and `grep -n`.
+ */
+function lineNumber(value: unknown): number | null {
+  const n = numberOrNull(value);
+  return n === null ? null : n + 1;
 }
 
 /** Space anchors file paths with a leading `/`; normalize it away. */

@@ -25,12 +25,13 @@ npm test          # unit + golden tests (fixtures/ from the Step 0 API spike)
 The token needs Space read + write scopes (replies post as the token owner's identity).
 The URL must be `https`.
 
-## Commands (v1 scope — M1 implements `reviews show`)
+## Commands (v1 scope)
 
 ```
-space-cli reviews list [--project KEY] [--repo NAME] [--state STATE] …   (M2)
+space-cli reviews list --project KEY [--repo NAME] [--state STATE] …     (M2 ✅)
 space-cli reviews show <reviewId> --project KEY                          (M1 ✅)
-space-cli comments list --review <reviewId> …                            (M2)
+space-cli comments list --review <reviewId> --project KEY …              (M2 ✅)
+                        [--diff-context N]                               (M3 ✅)
 space-cli comments reply --comment <commentId> (--text "…" | --stdin)     (M4)
 space-cli comments resolve --comment <commentId>                         (M4)
 space-cli comments unresolve --comment <commentId>                       (M4)
@@ -66,6 +67,30 @@ space-cli reviews show 2AomjG0QgoiG --project key:IJ
 `repository`/`sourceBranch`/`targetBranch` are `null` (the repo is per-file there).
 `authors`/`reviewers` are Space **profile ids**.
 
+### Comment anchors
+
+`comments list` reports each anchored thread with its file, revision, line
+coordinates, Space's snippet, and an `outdated` flag (schema: `PLAN.md` §5):
+
+- **Line numbers are 1-based** everywhere (`line`, `oldLine`, `end`, snippet,
+  `diffContext`) — usable directly with editors, `sed -n`, `grep -n`. Space
+  itself counts from 0; the CLI converts.
+- `line` is a right-side (new file) line; `oldLine` (with `line: null`) means
+  the comment is on a deleted line. `end` marks the last line of a multi-line
+  range comment.
+- **`outdated: false` is a guarantee**: the commented file is byte-identical
+  at the review's current head, so the line numbers are exact today.
+  `outdated: true`: the file changed, moved, or was deleted since the comment —
+  find the code by its snippet/diffContext text. `null` for review-level comments.
+- `--diff-context N` adds `anchor.diffContext`: the file as of the comment's
+  revision, N lines around the anchored line(s) — what the reviewer saw, even
+  if your checkout has moved on. `null` for binary or missing files. Costs one
+  extra request per distinct file revision (~350 ms each, run in parallel).
+
+```sh
+space-cli comments list --review 4fjews3Ivlae --project IJ --unresolved --diff-context 5
+```
+
 ## Error envelope
 
 Every failure is one JSON object on stderr + non-zero exit. Space API error codes
@@ -90,8 +115,8 @@ fake success.
 
 ## Layout
 
-- `src/lib/` — core logic (config, HTTP client, review mapping). Kept
-  framework-free so a future MCP wrapper is trivial.
+- `src/lib/` — core logic (config, HTTP client, review/comment mapping, anchor
+  enrichment). Kept framework-free so a future MCP wrapper is trivial.
 - `src/cli.ts` — commander wiring; `run(argv, io)` is fully injectable for tests.
 - `fixtures/` — real API responses captured in the Step 0 spike; used as golden
   tests to catch API drift.

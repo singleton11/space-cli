@@ -229,7 +229,9 @@ describe('run — reviews list', () => {
 describe('run — comments list', () => {
   const FEED_CHANNEL = '4Q1Lo73xJbml';
   function commentsRoute(url: string): unknown {
+    const parsed = new URL(url);
     if (url.includes('/code-reviews/rev1?')) return { feedChannelId: FEED_CHANNEL };
+    if (url.includes('/code-reviews/rev1/details')) return loadFixture('review-details-commits.json');
     if (url.includes('/code-reviews/rev1/unbound-discussions')) {
       return loadFixture('unbound-discussions.json');
     }
@@ -237,6 +239,13 @@ describe('run — comments list', () => {
       return loadFixture('feed-channel-projected.json');
     }
     if (url.includes('/chats/messages')) return loadFixture('thread-messages.json');
+    if (parsed.pathname.endsWith('/repositories/ultimate/files')) {
+      const bundle = loadFixture('files-blobs.json') as Record<string, unknown>;
+      return bundle[`${parsed.searchParams.get('commit')}:${parsed.searchParams.get('path')}`] ?? [];
+    }
+    if (parsed.pathname.endsWith('/repositories/ultimate/text-content')) {
+      return loadFixture('text-content-at-revision.json');
+    }
     return undefined;
   }
   it('emits {reviewId, comments} with anchored + review-level threads', async () => {
@@ -257,8 +266,40 @@ describe('run — comments list', () => {
       kind: 'anchored',
       author: 'Alexander.Gusakov',
       resolved: true,
-      anchor: { file: 'language-server/features-impl/db-connectivity/src/commands/mcp.kt', line: 71 },
+      outdated: true,
+      anchor: { file: 'language-server/features-impl/db-connectivity/src/commands/mcp.kt', line: 72 },
     });
+    expect(mcp.anchor).not.toHaveProperty('diffContext');
+  });
+  it('--diff-context N attaches anchor.diffContext', async () => {
+    vi.stubGlobal('fetch', stubFetchRouter(commentsRoute));
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'list', '--review', 'rev1', '--project', 'IJ', '--diff-context', '1',
+        '--file', 'language-server/features-impl/db-connectivity/src/commands/mcp.kt'],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(0);
+    const mcp = JSON.parse(io.out.join('')).comments[0];
+    expect(mcp.id).toBe('1mZGCe08o6SN');
+    expect(mcp.anchor.diffContext).toEqual({
+      revision: 'ef27fe0d70ed8a9518efddac4c6371530fc86469',
+      side: 'new',
+      lines: [
+        { line: 71, text: 'private fun Project.mcpStarter(): LSMcpStarter {' },
+        { line: 72, text: '    service<LspMcpServerStatusPublisher>()' },
+        { line: 73, text: '    return service<LSMcpStarter>()' },
+      ],
+    });
+  });
+  it.each([['-1'], ['abc'], ['1.5']])('--diff-context %s is a usage error', async (value) => {
+    const io = makeIo();
+    const code = await run(
+      ['comments', 'list', '--review', 'rev1', '--project', 'IJ', '--diff-context', value],
+      { env: ENV, home: NO_HOME, ...io },
+    );
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join('')).error).toBe('usage-error');
   });
   it('--unresolved keeps only unresolved threads', async () => {
     vi.stubGlobal('fetch', stubFetchRouter(commentsRoute));

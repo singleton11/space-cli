@@ -125,7 +125,7 @@ Reply body: `{ "channel": "<discussion channel id>", "text": "…" }` — **repl
 | Raw bytes | `GET /projects/{project}/repositories/{repository}/content?blobId&skip&limit` |
 | Find files | `GET /projects/{project}/repositories/{repository}/find-files?pattern=&commit=` |
 
-`text-content` returns `{type: "TEXT", lineEnding: "LF", bom, lines: [{text, index, offset, syntax[]}]}` — perfect for hunk building: fetch at `anchor.revision`, slice N lines around `anchor.line`, emit with diff coordinates from the built-in snippet.
+`text-content` returns `{type: "TEXT", lineEnding: "LF", bom, lines: [{text, index, offset, syntax[]}]}` — perfect for hunk building: fetch at `anchor.revision`, slice N lines around `anchor.line`. (M3 pins — 0-based lines, projections, blob ids via `files` — are in §9.)
 
 ### Message deletion (cleanup tool)
 
@@ -183,7 +183,13 @@ All performed on `AMPER` review #3842 (`1aqmHR0AKmNT`, commit-set review) — th
 | `discussion-created.json` | Discussion created via API (write-path proof) |
 | `thread-messages.json` | M2: a discussion's thread channel under the pinned projection — root comment + one reply |
 | `unbound-discussions.json` | Unbound (review-level) discussion list — recaptured in M2 under the pinned projection; includes one deleted-message ghost (empty text + author) |
-| `text-content-at-revision.json` | `text-content` response at an anchor revision |
+| `text-content-at-revision.json` | `text-content` response at an anchor revision (full, unprojected shape) |
+| `feed-channel-projected.json` | M3: recaptured with `endAnchor` added to the projection — byte-identical to the M2 capture otherwise (all `endAnchor: null` on this review) |
+| `review-details-commits.json` | M3: `details` commit graph of IJ #232805 (`4fjews3Ivlae`, never rebased; 12-commit chain, head `cc72ec46`) |
+| `review-details-csr.json` | M3: `details` commit graph of AMPER #3842 — a 4-commit chain plus a disjoint older commit (two roots → no single base) |
+| `files-blobs.json` | M3: real `files` responses bundled by `<commit>:<path>` — every anchor file of #232805 and #3842 at its anchor revision and at the review head |
+| `feed-csr-range-anchors.json` | M3: AMPER #3842 feed under the M3 projection — 6 anchored threads, 4 of them multi-line ranges (`endAnchor`) |
+| `text-content-lean.json` | M3: `text-content` under the pinned `type,lines(text)` projection (`KnownAgents.kt` @ `7911192f`, 96 lines) |
 
 ## 7. Open items for M1+
 
@@ -221,3 +227,48 @@ Everything below was probed read-only against the live instance while building `
 ### Live E2E verified
 - MR 222964 (`3XMLGJ3wtYmM`, IJ): 81 threads (41 anchored + 40 review-level), reply chains up to 33 messages, multi-batch feed pagination, ~125 requests in 1.9 s, no rate limiting.
 - Filters `--file` / `--author` / `--unresolved` / `--state` / `--text` / `--repo` all behave as documented above.
+
+---
+## 9. M3 diff-context pins (2026-11-05, live on jetbrains.team)
+
+All probes read-only. Reviews used: IJ #222964 (`3XMLGJ3wtYmM`, 41 anchors, rebased many times), IJ #232805 (`4fjews3Ivlae`, never rebased), AMPER #3842 (`1aqmHR0AKmNT`, commit-set review), plus 13 recently-updated IJ MRs (48 anchors) for the revision statistics.
+
+### Line coordinates are 0-based
+`anchor.line` / `anchor.oldLine` / `endAnchor.*` / `snippet.lines[].oldLineNum|newLineNum` all index from **0**: `anchor.line: 71` is `text-content` `lines[71]` (editor line 72). Verified on 50+ anchors, both diff sides, by matching snippet text against file content; anchors on the first line of a new file report `line: 0`. **The CLI emits 1-based numbers everywhere** (anchor, end, snippet, diffContext) — Space's raw numbers would silently put agents one line off.
+
+### Anchor sides and revisions
+- Exactly one of `line` / `oldLine` is set on every observed anchor (91/91): `line` = right side (new file), `oldLine` = left side (comment on a deleted line).
+- `revision` is the commit **of the side the anchor points into**: the new-side commit for `line` anchors, the old-side commit for `oldLine` anchors. `filename` + `revision` + the coordinate address the commented line in `text-content` directly (verified by matching snippet text against the file at `revision` for all 41 anchors on #222964 — 5 left-side, 36 right-side; the only deviations are the snippet quirks below).
+- **`endAnchor`** (not in the M2 projection) marks multi-line range comments: same shape as `anchor`. It usually shares the anchor's revision and side, but a range can **span both diff sides with different revisions** (e.g. start `oldLine 444 @ 68f3a31d`, end `line 466 @ a4460e62`). 18 of 41 anchors on #222964 and 4 of 6 on #3842 are ranges. Projection: `endAnchor(revision,line,oldLine)`.
+- `interpolatedLineState` (`Normal`|`Deleted`|`Modified`) exists in the schema but was `null` on every anchor observed — not used.
+
+### Snippets are lossy; content at the revision is ground truth
+- `snippet.lines[].text` carries **one** text per line: for `MODIFIED` lines it is the new text, so old-side numbering of a modified line shows text that isn't in the old file.
+- Occasionally the snippet's diff is computed against a later revision than the anchor (`4DftCa3J6iIo`: right-side anchor, yet the file at `anchor.revision` matches the snippet's *old* side).
+- E2E cross-check of snippet lines vs fetched content: 451 lines over 3 reviews, all mismatches (9) explained by the two cases above.
+
+### Review head / base — commit graph from `details`
+- `GET .../code-reviews/{id}/details?$fields=commits(repository(name),commits(commit(id,parents,commitDate)))` returns every in-review commit with parents, grouped by repository name — **both** MRs and commit-set reviews, one request. Order is not topological.
+- Head = the tip (in-review commit nobody in the review builds on); for MRs it equals `branchPair.sourceBranchRef` (verified 14/14). Commit-set reviews can hold **disjoint** commits (AMPER #3842: a 4-commit chain + an older standalone commit) → several tips; the CLI takes the newest by `commitDate`.
+- Base = parent of the single root commit. Several roots (disjoint commit set) → no base.
+- `GET .../repositories/{repo}/commits?query=id:<sha>` returns one commit with parents (~100 ms; bare-sha query also works but is slower). Not needed by the CLI.
+
+### Why `outdated` compares file blobs, not revisions
+- IJ MRs are rebased constantly: **0 of 48** right-side anchors across 13 recent MRs point at the current head, and most anchor revisions aren't even in the review's current commit list (#229550's four commits were all re-committed 10 minutes before the probe). "anchor.revision ≠ head" would flag every comment.
+- `GET .../repositories/{repo}/files?commit=<sha>&path=<file>&$fields=path,blob,type` → `[{path, blob, type}]` in ~35 ms. A path missing at that commit → `[]`; an unknown commit → 404 `not-found`; a directory path lists its children (match `path` exactly).
+- Same blob at `anchor.revision` and at the review head (base, for left-side anchors) ⇒ the file is byte-identical ⇒ the anchor's line numbers are exact today → `outdated: false`. Anything else (changed, deleted/renamed, revision gone, base unknown) → `true`. On #232805: 1 of 10 anchors current (`T8Ogg09mZHO`, `LSMcpStarter.kt` blob `479d5433` at `a18bbf70` and at head).
+
+### `text-content` details
+- Pinned projection `type,lines(text)` — ~4× smaller than the default (which carries syntax markup, folds, scopes).
+- Latency ~330–380 ms per call regardless of projection (server-side highlighting), vs ~35 ms for `files`. Hence: `--diff-context` is opt-in, `outdated` uses `files`, both deduped per (repository, revision, path) and run 8-way parallel.
+- `type` ∈ `TEXT` | `LARGE` | `LINK` | `IMAGE` | `BINARY_OTHER`; non-text comes back as e.g. `{"type": "IMAGE", "lines": []}` → `diffContext: null`.
+- Missing file or unknown commit → 404 `not-found` (`"Cannot find file <path> in commit <sha>"`) → `diffContext: null`.
+
+### Live E2E verified (built CLI, `comments list --diff-context N`)
+| Review | Threads | Time (no flag / with flag) | Result |
+|---|---|---|---|
+| IJ #232805 `4fjews3Ivlae` | 10 anchored | 1.1 s / 1.7–6.0 s | 59 snippet lines cross-checked, 0 mismatches; `outdated` 1 false / 9 true |
+| IJ #222964 `3XMLGJ3wtYmM` | 41 anchored + 40 review-level | 3.0 s / 5.1 s | 5 left-side anchors (`side: "old"`), 18 ranges, 326 lines checked (9 explained snippet quirks); `outdated` 1 false / 40 true / 40 null |
+| AMPER #3842 `1aqmHR0AKmNT` | 6 anchored + 1 review-level | 1.0 s with flag | 4 ranges widened correctly, 66 lines checked, 0 mismatches; anchor on head → `false` without lookups |
+
+`--diff-context` timing variance is `text-content` latency on the server side.

@@ -80,17 +80,21 @@ space-cli comments unresolve --comment <commentId>
   "createdAt": 1793699891738,        // epoch ms
   "text": "This will NPE when the cache is cold. Guard with ...",
   "resolved": true,                 // live thread state (Space resolves whole threads)
-  "outdated": false,                // true if anchor.revision ≠ review head
-  "anchor": {
+  "outdated": false,                // false = file byte-identical at review head → lines exact; true = changed since; null = review-level
+  "anchor": {                       // ALL line numbers 1-based (Space is 0-based; the CLI converts — pinned M3)
     "file": "language-server/.../mcp.kt",   // leading "/" from Space normalized away
     "repository": "ultimate",
-    "line": 71,                      // right-side (new) coordinate = anchor.line
-    "oldLine": null,                 // left-side coordinate = anchor.oldLine (null = addition)
-    "revision": "ef27fe0d",         // commit the comment is anchored to
+    "line": 72,                      // right-side (new file) line; null for left-side anchors
+    "oldLine": null,                 // left-side (old file) line — comment on a deleted line; else null
+    "revision": "ef27fe0d",         // commit of the side the anchor points into
+    "end": null,                     // multi-line range end {line, oldLine, revision}; may sit on the other side
     "snippet": [                     // built into Space: snippet.lines[]
-      { "text": "  return cache.get(key);", "oldLineNum": 51, "newLineNum": 67 }
+      { "text": "  return cache.get(key);", "oldLineNum": 52, "newLineNum": 68 }
     ],
-    "diffContext": "..."             // present with --diff-context N (default off)
+    "diffContext": {                 // only with --diff-context N; null if binary/missing
+      "revision": "ef27fe0d", "side": "new",
+      "lines": [ { "line": 69, "text": "" }, { "line": 70, "text": "..." } ]
+    }
   },
   "replies": [                      // chronological messages from the thread channel
     { "id": "FB6A90W8DsP", "author": "Anton.Prokhorov", "createdAt": 1793889048514, "text": "..." }
@@ -98,13 +102,13 @@ space-cli comments unresolve --comment <commentId>
 }
 ```
 
-**List envelopes:** `reviews list` emits `{"totalCount": <matching filters, independent of --limit>, "reviews": [...]}`; `comments list` emits `{"reviewId": "<id>", "comments": [...]}` (oldest first). Until M3 ships revision comparison, the `outdated` field is `null` — agents must not rely on it in v1.
+**List envelopes:** `reviews list` emits `{"totalCount": <matching filters, independent of --limit>, "reviews": [...]}`; `comments list` emits `{"reviewId": "<id>", "comments": [...]}` (oldest first).
 
-**Snippet:** Space already returns a code snippet per comment (`snippet.lines` with old/new line numbers) — `comments list` emits it by default, making `--diff-context` a pure enhancement.
+**Snippet:** Space already returns a code snippet per comment (`snippet.lines` with old/new line numbers) — `comments list` emits it by default, making `--diff-context` a pure enhancement. Snippets are lossy (modified lines carry only their new text — see api-notes §9); `diffContext` is the ground truth.
 
-**Diff context (`--diff-context N`):** the CLI fetches the file content (or commit diff) **at the comment's revision** from Space and emits the hunk around the anchor lines — *exactly what the reviewer saw*. This lets an agent interpret the comment without any git operations, even if its local checkout has moved on.
+**Diff context (`--diff-context N`):** the CLI fetches the file content **at the comment's revision** from Space and emits N lines around the anchored line(s) (widened over a multi-line range) as `{revision, side, lines: [{line, text}]}` — the code *exactly as the reviewer saw it*, on the side they commented. This lets an agent interpret the comment without any git operations, even if its local checkout has moved on. Opt-in because `text-content` costs ~350 ms per distinct file/revision.
 
-**Outdated anchors:** comments carry their revision; if it differs from the review's current head, `outdated: true` warns the agent that line numbers may not match the latest state.
+**Outdated anchors:** always computed for anchored comments by comparing the commented file's **git blob** at the anchor's revision against the current review head (review base, for left-side anchors). `false` is a guarantee — byte-identical file, the anchor's line numbers are exact today; `true` warns that the file changed, moved, or was deleted since the comment, so the agent should locate the code by snippet/diffContext text. (The originally planned "anchor.revision ≠ head" test was dropped: IJ reviews are rebased so often that it flagged 48/48 live anchors — api-notes §9.)
 
 ## 6. Threading & resolve semantics
 
@@ -132,7 +136,7 @@ This plan deliberately does **not** claim exact Space endpoint paths. Step 0 pin
 | **M0 — Spike** | §7. Hard gate. | 0.5 d |
 | **M1 — Skeleton** | Config/env, HTTP client, auth, JSON output + error envelope, `reviews show` — ✅ **DONE 2026-11-05** (TypeScript/Node, commander, vitest: 33 tests incl. golden fixture tests; live E2E on jetbrains.team verified: MR + commit-set reviews, not-found path) | 0.5–1 d |
 | **M2 — Read path** | `reviews list` (filters, pagination), `comments list` (threads, anchors, filters) — ✅ **DONE 2026-11-05** (31 new tests, 64 total; live E2E on jetbrains.team: 81-thread review with feed pagination + 40 review-level threads, `--file`/`--author`/`--unresolved` filters, deleted-message ghost filtering; bare project keys now auto-prefixed `key:` — bare keys 404 live, fixing the M1 trap; `--project` escape hatches: `key:XX` / `id:XX`) | 1–2 d |
-| **M3 — Diff context** | `--diff-context`: revision content fetch, hunk builder, `outdated` flag | 1 d |
+| **M3 — Diff context** | `--diff-context`: revision content fetch, hunk builder, `outdated` flag — ✅ **DONE 2026-11-05** (42 new tests, 106 total, incl. golden tests on 5 new live fixtures; live E2E on jetbrains.team: unrebased MR, 81-thread rebased MR with left-side + cross-side range anchors, commit-set review with disjoint commits — 451 snippet lines cross-checked against fetched content. Findings fixed on the way: **Space line numbers are 0-based → output is now 1-based everywhere** (changes M2 output by +1); multi-line ranges (`endAnchor`) now exposed as `anchor.end`; `outdated` compares file blobs instead of revisions — api-notes §9) | 1 d |
 | **M4 — Mutations** | `comments reply`, `resolve`, `unresolve` | 1 d |
 | **M5 — Agent docs** | README with JSON schemas, an end-to-end agent workflow example, exit codes | 0.5 d |
 

@@ -81,21 +81,30 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
     .description(
       'List comment threads of a review (anchored file/line comments and review-level comments), ' +
         'oldest first. Each item carries its anchor, snippet, and replies. ' +
-        'The "outdated" field is null in v1 until revision comparison ships.',
+        'Line numbers are 1-based. "outdated": false guarantees the commented file is unchanged ' +
+        'at the review head, so anchor lines are exact; true means it changed since the comment ' +
+        '(locate the code by snippet text); null for review-level comments.',
     )
     .requiredOption('--review <reviewId>', 'review record id')
     .requiredOption('--project <key>', PROJECT_HELP)
     .option('--file <path>', 'only anchored comments on this exact file path')
     .option('--author <user>', 'only threads whose root comment author (username) matches exactly')
     .option('--unresolved', 'only unresolved threads')
+    .option(
+      '--diff-context <lines>',
+      'add anchor.diffContext: the file as of the comment\'s revision, this many lines around the anchor',
+      parseNonNegativeInt,
+    )
     .action(async (options: CommentsListOptions) => {
       const config = resolveConfig({ env: io.env, home: io.home });
       const client = new SpaceClient(config.url, config.token);
-      const result = await listComments(client, options.project, options.review, {
-        file: options.file,
-        author: options.author,
-        unresolved: options.unresolved,
-      });
+      const result = await listComments(
+        client,
+        options.project,
+        options.review,
+        { file: options.file, author: options.author, unresolved: options.unresolved },
+        { diffContext: options.diffContext },
+      );
       emitJson(io, program, { reviewId: options.review, comments: result });
     });
 
@@ -133,6 +142,7 @@ interface CommentsListOptions {
   file?: string;
   author?: string;
   unresolved?: boolean;
+  diffContext?: number;
 }
 
 function parsePositiveInt(value: string): number {
@@ -141,6 +151,13 @@ function parsePositiveInt(value: string): number {
     throw new InvalidArgumentError('must be a positive integer');
   }
   return n;
+}
+
+function parseNonNegativeInt(value: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new InvalidArgumentError('must be a non-negative integer');
+  }
+  return Number.parseInt(value, 10);
 }
 
 function emitJson(io: RunIo, program: Command, value: unknown): void {
