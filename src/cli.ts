@@ -1,5 +1,6 @@
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { homedir } from 'node:os';
+import packageJson from '../package.json' with { type: 'json' };
 import { resolveConfig } from './lib/config.js';
 import { SpaceCliError } from './lib/errors.js';
 import { SpaceClient } from './lib/http.js';
@@ -32,7 +33,7 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
   program
     .name('space-cli')
     .description('Read, answer, and resolve JetBrains Space code review comments')
-    .version('0.1.0')
+    .version(packageJson.version)
     .option('--pretty', 'pretty-print JSON output (default: one compact line)');
   // Errors are data: suppress commander's human-readable stderr output and
   // emit a JSON envelope instead. Help/version go to stdout unaffected.

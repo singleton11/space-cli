@@ -1,6 +1,6 @@
 {
   "name": "jetbrains-space-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Narrow-scope CLI for coding agents to read, answer, and resolve JetBrains Space code review comments",
   "type": "module",
   "bin": {
