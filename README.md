@@ -22,6 +22,22 @@ npx jetbrains-space-cli --help
 
 Requires Node 20+. From source: `npm install && npm run build`.
 
+### Install the agent skill
+
+The package bundles an agent skill (workflows, pitfalls, output contract) that teaches
+coding agents how to use `space-cli`. Install it into your agent's global skills
+directory:
+
+```sh
+space-cli skill install                # Pi agent: ~/.pi/agent/skills/space-cli/SKILL.md
+space-cli skill install --agent claude # Claude Code: ~/.claude/skills/space-cli/SKILL.md
+space-cli skill install --dir <path>   # any other skills directory
+space-cli skill install --force       # overwrite after a CLI update
+```
+
+Output: `{"installed": "<path>", "overwritten": false}`. Re-running without
+`--force` fails with a `usage-error` if the skill is already there.
+
 ## Configure
 
 The CLI needs a Space URL and an API token. Either set environment variables:

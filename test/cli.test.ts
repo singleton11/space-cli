@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { run } from '../src/cli.js';
 
@@ -517,5 +519,72 @@ describe('run — comments reply/resolve/unresolve (M4)', () => {
     expect(io.out).toEqual([]);
     expect(JSON.parse(io.err.join(''))).toMatchObject({ error: 'platform-limitation' });
     expect(requests.some((r) => r.method === 'PATCH')).toBe(false); // nothing was toggled
+  });
+});
+
+describe('run — skill install', () => {
+  const TMP_ROOT = mkdtempSync(join(tmpdir(), 'space-cli-skill-'));
+
+  it('installs the bundled skill into a --dir, exit 0, and reports the path', async () => {
+    const io = makeIo();
+    const code = await run(['skill', 'install', '--dir', TMP_ROOT], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+
+    expect(code).toBe(0);
+    expect(io.err).toEqual([]);
+    const parsed = JSON.parse(io.out.join(''));
+    expect(parsed.overwritten).toBe(false);
+    const installed = readFileSync(parsed.installed, 'utf8');
+    const source = readFileSync(new URL('../skills/space-cli/SKILL.md', import.meta.url), 'utf8');
+    expect(installed).toBe(source);
+  });
+
+  it('refuses to overwrite an existing install without --force (usage-error)', async () => {
+    const io = makeIo();
+    const code = await run(['skill', 'install', '--dir', TMP_ROOT], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(1);
+    expect(io.out).toEqual([]);
+    expect(JSON.parse(io.err.join(''))).toMatchObject({ error: 'usage-error' });
+  });
+
+  it('overwrites with --force and reports overwritten: true', async () => {
+    const io = makeIo();
+    const code = await run(['skill', 'install', '--dir', TMP_ROOT, '--force'], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(io.out.join('')).overwritten).toBe(true);
+  });
+
+  it('derives the --agent pi directory from home', async () => {
+    const io = makeIo();
+    const code = await run(['skill', 'install', '--agent', 'pi'], {
+      env: ENV,
+      home: TMP_ROOT,
+      ...io,
+    });
+    expect(code).toBe(0);
+    const { installed } = JSON.parse(io.out.join(''));
+    expect(installed).toBe(join(TMP_ROOT, '.pi', 'agent', 'skills', 'space-cli', 'SKILL.md'));
+  });
+
+  it('rejects an unknown agent with a usage-error', async () => {
+    const io = makeIo();
+    const code = await run(['skill', 'install', '--agent', 'vscode'], {
+      env: ENV,
+      home: NO_HOME,
+      ...io,
+    });
+    expect(code).toBe(1);
+    expect(JSON.parse(io.err.join(''))).toMatchObject({ error: 'usage-error' });
   });
 });

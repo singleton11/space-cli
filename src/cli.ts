@@ -1,10 +1,12 @@
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
+import { homedir } from 'node:os';
 import { resolveConfig } from './lib/config.js';
 import { SpaceCliError } from './lib/errors.js';
 import { SpaceClient } from './lib/http.js';
 import { listComments } from './lib/comments.js';
 import { replyToComment, setCommentResolved } from './lib/mutations.js';
 import { DEFAULT_LIST_LIMIT, getReview, listReviews } from './lib/reviews.js';
+import { agentSkillDir, installSkill } from './lib/skill.js';
 
 export interface RunIo {
   /** Environment variables (usually `process.env`). */
@@ -167,6 +169,28 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
       emitJson(io, program, result);
     });
 
+  const skill = program.command('skill');
+  skill
+    .command('install')
+    .description(
+      'Install the bundled agent skill (space-cli workflows, pitfalls, output contract) into a ' +
+        'coding agent\'s global skills directory, as <dir>/space-cli/SKILL.md. ' +
+        'Re-running without --force fails with a usage-error if the skill is already there.',
+    )
+    .addOption(
+      new Option('--agent <agent>', 'agent whose global skills directory to install into')
+        .choices(['pi', 'claude'])
+        .default('pi'),
+    )
+    .option('--dir <path>', 'install into this skills directory instead of the agent default')
+    .option('--force', 'overwrite an already-installed skill')
+    .action(async (options: SkillInstallOptions) => {
+      const home = io.home ?? homedir();
+      const dir = options.dir ?? agentSkillDir(options.agent, home);
+      const result = installSkill({ dir, force: options.force });
+      emitJson(io, program, result);
+    });
+
   try {
     await program.parseAsync(argv, { from: 'user' });
     return 0;
@@ -216,6 +240,12 @@ interface MutationOptions {
   comment: string;
   review: string;
   project: string;
+}
+
+interface SkillInstallOptions {
+  agent: string;
+  dir?: string;
+  force?: boolean;
 }
 
 /** Exactly one of --text / --stdin; the text must be non-empty. */
