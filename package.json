@@ -13,7 +13,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && vitest run"
   },
   "keywords": [
     "jetbrains",
@@ -21,8 +22,22 @@
     "code-review",
     "cli"
   ],
-  "license": "UNLICENSED",
-  "private": true,
+  "license": "MIT",
+  "author": "Anton Prokhorov",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/singleton11/space-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/singleton11/space-cli/issues"
+  },
+  "homepage": "https://github.com/singleton11/space-cli#readme",
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
   "devDependencies": {
     "@types/node": "^26.6.6",
     "typescript": "^5.9.3",
