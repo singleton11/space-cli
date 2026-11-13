@@ -54,6 +54,26 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('run — review decisions', () => {
+  it.each([
+    ['accept', 'accept-changes', '{"forever":false}'],
+    ['accept-and-finalize', 'accept-changes', '{"forever":true}'],
+    ['request-changes', 'wait-author-reply', ''],
+  ])('submits %s over HTTP', async (decision, endpoint, body) => {
+    const fetchMock = stubFetch(200, '');
+    vi.stubGlobal('fetch', fetchMock);
+    const io = makeIo();
+    expect(await run(['reviews', decision, 'rev', '--project', 'IJ'], {
+      env: ENV, home: NO_HOME, ...io,
+    })).toBe(0);
+    expect(JSON.parse(io.out.join(''))).toEqual({ reviewId: 'rev', decision });
+    const request = (fetchMock as unknown as { mock: { calls: Request[][] } }).mock.calls[0]![0]!;
+    expect(request.method).toBe('PUT');
+    expect(request.url).toBe(`https://jetbrains.team/api/http/projects/key%3AIJ/code-reviews/rev/${endpoint}`);
+    expect(await request.text()).toBe(body);
+  });
+});
+
 describe('run — reviews show', () => {
   it('emits normalized review JSON to stdout, exit 0', async () => {
     const fetchMock = stubFetch(200, REVIEW_FIXTURE);

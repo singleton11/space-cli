@@ -67,6 +67,9 @@ space-cli reviews list --project KEY [--repo NAME] [--state STATE]
                        [--author PROFILE_ID] [--reviewer PROFILE_ID]
                        [--text QUERY] [--limit N]                 # default 25
 space-cli reviews show <reviewId> --project KEY
+space-cli reviews accept <reviewId> --project KEY
+space-cli reviews accept-and-finalize <reviewId> --project KEY
+space-cli reviews request-changes <reviewId> --project KEY
 space-cli comments list --review <reviewId> --project KEY
                         [--file PATH] [--author USER] [--unresolved]
                         [--diff-context N]
@@ -121,6 +124,14 @@ Key fields:
 - `anchor.diffContext` — only with `--diff-context N`: the file at the commented
   revision, N lines around the anchor — the ground truth even if the checkout
   has moved on. Costs ~350 ms per distinct file revision.
+
+### Review decisions
+
+`reviews accept` approves the current changes; later changes may reset that approval.
+`reviews accept-and-finalize` makes the approval sticky even after further changes;
+it does not merge or close the review. `reviews request-changes` waits for the
+author to respond. These actions run immediately as the token owner, with no
+confirmation. Success reports the submitted decision, not an independently verified state.
 
 ### Reply and resolve
 

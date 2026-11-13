@@ -7,6 +7,7 @@ import { SpaceClient } from './lib/http.js';
 import { listComments } from './lib/comments.js';
 import { replyToComment, setCommentResolved } from './lib/mutations.js';
 import { DEFAULT_LIST_LIMIT, getReview, listReviews } from './lib/reviews.js';
+import { submitReviewDecision, type ReviewDecision } from './lib/review-decisions.js';
 import { agentSkillDir, installSkill } from './lib/skill.js';
 
 export interface RunIo {
@@ -80,6 +81,23 @@ export async function run(argv: string[], io: RunIo): Promise<number> {
       }, options.limit);
       emitJson(io, program, result);
     });
+
+  for (const [decision, description] of [
+    ['accept', 'Accept changes; new changes may reset the approval'],
+    ['accept-and-finalize', 'Accept and finalize approval; new changes do not reset it'],
+    ['request-changes', 'Request changes and wait for the author'],
+  ] as const satisfies ReadonlyArray<readonly [ReviewDecision, string]>) {
+    reviews
+      .command(decision)
+      .description(`${description}. Acts immediately as the token owner.`)
+      .argument('<reviewId>', 'review record id')
+      .requiredOption('--project <key>', PROJECT_HELP)
+      .action(async (reviewId: string, options: { project: string }) => {
+        const config = resolveConfig({ env: io.env, home: io.home });
+        const client = new SpaceClient(config.url, config.token);
+        emitJson(io, program, await submitReviewDecision(client, options.project, reviewId, decision));
+      });
+  }
 
   const comments = program.command('comments');
   comments

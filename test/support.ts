@@ -8,7 +8,7 @@ export function fixture<T = Record<string, unknown>>(name: string): T {
 
 export type Params = Record<string, string | number | boolean | undefined | null>;
 export interface Call {
-  method: 'get' | 'post' | 'patch';
+  method: 'get' | 'post' | 'put' | 'patch';
   path: string;
   params: Params;
   body?: unknown;
@@ -28,6 +28,9 @@ export function routingClient(routes: Route[]): { calls: Call[]; client: never }
     },
     async post<T>(path: string, body?: unknown): Promise<T> {
       return route<T>(calls, routes, 'post', path, {}, body);
+    },
+    async put<T>(path: string, body?: unknown): Promise<T> {
+      return route<T>(calls, routes, 'put', path, {}, body);
     },
     async patch<T>(path: string, body?: unknown): Promise<T> {
       return route<T>(calls, routes, 'patch', path, {}, body);

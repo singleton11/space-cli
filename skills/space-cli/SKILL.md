@@ -17,8 +17,8 @@ permanent token (reads + posts as the token owner's identity).
 - Replying to review comments, resolving/unresolving threads
 - Any scripted/agent handling of a JetBrains Space review (jetbrains.team or another org's instance)
 
-Do NOT use for: approving a review, merging, or reading timeline events (commits
-added, approvals) — space-cli has no commands for those.
+Do NOT use for merging or reading timeline events (commits added, approvals) —
+space-cli has no commands for those.
 
 ## Setup check (30 seconds)
 
@@ -49,6 +49,9 @@ URL must be https. If config is missing, ask the user for a Space permanent toke
 ```sh
 space-cli reviews list  --project KEY [--repo NAME] [--state Opened|Closed|RequiresAuthorAttention|NeedsReview|Merged] [--author PID] [--reviewer PID] [--text QUERY] [--limit N]
 space-cli reviews show  <reviewId> --project KEY
+space-cli reviews accept <reviewId> --project KEY
+space-cli reviews accept-and-finalize <reviewId> --project KEY
+space-cli reviews request-changes <reviewId> --project KEY
 space-cli comments list  --review <reviewId> --project KEY [--unresolved] [--file PATH] [--author PID] [--diff-context N]
 space-cli comments reply --comment <commentId> --review <reviewId> --project KEY --text "…"
 space-cli comments resolve   --comment <commentId> --review <reviewId> --project KEY
@@ -57,6 +60,10 @@ space-cli comments unresolve --comment <commentId> --review <reviewId> --project
 
 `--project` is required everywhere. Bare keys are auto-prefixed `key:` (escape
 hatches: `key:XX`, `id:XX`). Timestamps are epoch milliseconds.
+
+Review decisions act immediately as the token owner. Only submit them when asked.
+`accept-and-finalize` makes the approval sticky across later changes; it does not
+merge or close the review. Success reports the submitted action, not a read-back.
 
 ## Workflow A: "anything new in my reviews?"
 

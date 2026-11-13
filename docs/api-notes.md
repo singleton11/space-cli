@@ -6,6 +6,8 @@
 
 **OpenAPI spec:** `GET /api/http/openapi.json` → OpenAPI 3.0, 628 paths, served by the instance itself. Use it in CI as a drift check.
 
+Review decisions (OpenAPI schema; no live mutation tested): `PUT .../code-reviews/{id}/accept-changes` with required `{ "forever": false }` for ordinary acceptance or `{ "forever": true }` for sticky acceptance; `PUT .../code-reviews/{id}/wait-author-reply` for requesting changes. Success responses have no documented body.
+
 ---
 
 ## 1. Endpoint map (all verified live)

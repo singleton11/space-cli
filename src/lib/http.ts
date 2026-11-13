@@ -30,6 +30,12 @@ export class SpaceClient {
     return this.request<T>('POST', url, path, body);
   }
 
+  /** PUT a JSON body to an API resource; same semantics as {@link post}. */
+  async put<T = unknown>(path: string, body?: unknown): Promise<T> {
+    const url = this.url(path);
+    return this.request<T>('PUT', url, path, body);
+  }
+
   /** PATCH a JSON body to an API resource; same semantics as {@link post}. */
   async patch<T = unknown>(path: string, body?: unknown): Promise<T> {
     const url = this.url(path);
